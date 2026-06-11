@@ -41,6 +41,8 @@ DNS Query Resolution Policies solve this: each client subnet is answered with on
 powershell -ExecutionPolicy Bypass -File .\DNS-GUI.ps1
 ```
 
+<img width="1217" height="728" alt="dns-policy-manager" src="https://github.com/user-attachments/assets/1a344ea4-74b4-4b2c-97cc-ed2500d62ae1" />
+
 1. Enter one or more DCs (comma-separated) and the DNS zone, then **Laden** (Load).
 2. Browse the three tabs: policies, client subnets, zone scopes & records.
 3. Use the action bar to create, edit, toggle, delete or replicate policies, or export a report.
