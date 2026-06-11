@@ -2,6 +2,8 @@
 
 A graphical management tool for **Windows DNS Server Query Resolution Policies**, written in PowerShell + WPF.
 
+<img width="1217" height="728" alt="dns-policy-manager" src="https://github.com/user-attachments/assets/1a344ea4-74b4-4b2c-97cc-ed2500d62ae1" />
+
 The built-in Windows DNS Manager (`dnsmgmt.msc`) cannot display or edit DNS policies at all. If you use DNS policies — for example to give clients in different subnets different answers for the same hostname — you are otherwise limited to raw PowerShell commands. **DNS-GUI** brings that management into a usable graphical interface.
 
 > The user interface is in German. The code, comments and this documentation are structured so that the tool is easy to adapt.
@@ -40,8 +42,6 @@ DNS Query Resolution Policies solve this: each client subnet is answered with on
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\DNS-GUI.ps1
 ```
-
-<img width="1217" height="728" alt="dns-policy-manager" src="https://github.com/user-attachments/assets/1a344ea4-74b4-4b2c-97cc-ed2500d62ae1" />
 
 1. Enter one or more DCs (comma-separated) and the DNS zone, then **Laden** (Load).
 2. Browse the three tabs: policies, client subnets, zone scopes & records.
