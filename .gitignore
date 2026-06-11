@@ -1,0 +1,12 @@
+# Reports / exports the tool may produce
+*.txt
+DNS-Policy-Report_*.txt
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
