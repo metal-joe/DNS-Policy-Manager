@@ -1,25 +1,23 @@
 <#
 .SYNOPSIS
-    DNS Policy Manager - GUI fuer Windows DNS Query Resolution Policies
+    DNS Policy Manager - GUI fuer Windows DNS Query Resolution Policies.
+
 .DESCRIPTION
-    Grafische Verwaltung von DNS Server Query Resolution Policies fuer den
-    Anwendungsfall "multi-homed Server segmentgerecht aufloesen".
+    Verwaltet DNS Server Query Resolution Policies ueber eine grafische
+    Oberflaeche - gedacht vor allem fuer den Fall, dass ein multi-homed Server
+    (mehrere A-Records, ein Bein je Segment) je nach Quell-Subnetz nur das
+    erreichbare Bein zurueckgeben soll.
 
-    Funktionen:
-      - Mehrere DCs abfragen (Policies replizieren nicht -> Vergleich noetig)
-      - Policies, Client-Subnetze und Zone-Scopes anzeigen
-      - NEU: Komplette Policy assistiert anlegen (Subnetz + Scope + A-Record + Policy)
-      - NEU: Policy aktivieren/deaktivieren
-      - NEU: Policy loeschen (mit Sicherheitsabfrage)
-      - Text-Export als Konfigurationsnachweis
-
-    SCHREIBENDE AKTIONEN sind durch Bestaetigungsdialoge geschuetzt und werden
-    in der Statusleiste protokolliert.
+    Kann mehrere DCs gleichzeitig abfragen (Policies replizieren nicht, daher
+    ist der Vergleich ueber DCs hinweg wichtig), Policies/Subnetze/Scopes
+    anzeigen, neue Policies assistiert anlegen, bestehende bearbeiten,
+    aktivieren/deaktivieren, loeschen, auf weitere DCs uebertragen und den
+    Stand als Textreport exportieren. Schreibende Aktionen laufen ueber
+    Bestaetigungsdialoge und werden in der Statusleiste protokolliert.
 
 .NOTES
-    Voraussetzung: PowerShell-Modul "DnsServer". Auf einem DC ausfuehren.
-    Schreibende Aktionen erfordern DNS-Admin-Rechte auf dem Ziel-DC.
-    Theme: Dark mode, Akzentfarbe #3B82F6
+    Benoetigt das Modul "DnsServer" (auf einem DC vorhanden, sonst RSAT-DNS)
+    und DNS-Admin-Rechte auf dem Ziel-DC. Getestet unter Windows PowerShell 5.1.
 #>
 
 #Requires -Version 5.1
@@ -38,9 +36,7 @@ if (-not (Get-Module -ListAvailable -Name DnsServer)) {
 }
 Import-Module DnsServer -ErrorAction SilentlyContinue
 
-# ======================================================================
-# HAUPTFENSTER-XAML
-# ======================================================================
+# --- Hauptfenster ---
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -378,9 +374,7 @@ function Get-CriteriaValue {
     return ""
 }
 
-# ======================================================================
-# LADE-LOGIK  (mit korrekter Record-Darstellung)
-# ======================================================================
+# Laedt Policies/Subnetze/Scopes von den angegebenen DCs
 function Load-Data {
     $zone = $TxtZone.Text.Trim()
     $dcInput = $TxtDCs.Text.Trim()
@@ -428,7 +422,7 @@ function Load-Data {
                 if ($scName -eq $zone) { continue }
                 try {
                     $recs = Get-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -ZoneScope $scName -ErrorAction Stop
-                    # NUR aussagekraeftige Records zeigen: A, AAAA, CNAME. NS/SOA = Rauschen -> ausblenden.
+                    # Nur A/AAAA/CNAME zeigen - NS/SOA der Scopes sind Rauschen
                     $recs = $recs | Where-Object { $_.RecordType -in @('A','AAAA','CNAME') }
                     if (-not $recs) {
                         [void]$scpList.Add([PSCustomObject]@{
@@ -464,9 +458,6 @@ function Load-Data {
     Set-Status $msg
 }
 
-# ======================================================================
-# EXPORT
-# ======================================================================
 function Export-Data {
     if ($script:dataPolicies.Count -eq 0 -and $script:dataScopes.Count -eq 0) {
         [System.Windows.MessageBox]::Show("Keine Daten geladen.","Export","OK","Information") | Out-Null
@@ -492,9 +483,7 @@ function Export-Data {
     }
 }
 
-# ======================================================================
-# ASSISTENT: NEUE POLICY (Subnetz + Scope + A-Record + Policy)
-# ======================================================================
+# Assistent: legt Subnetz, Scope, Record und Policy in einem Rutsch an
 function Show-NewPolicyDialog {
     $targetDC = Get-TargetDC
     $zone = $TxtZone.Text.Trim()
@@ -601,7 +590,6 @@ function Show-NewPolicyDialog {
 
     $DlgDC.Text = $targetDC
 
-    # Auto-Vorschlag der Namen anhand der Eingaben.
     # Konvention (an Bestand angelehnt):
     #   Subnetz-Kuerzel = 3. Oktett des Client-Subnetzes  (192.168.10.0/24 -> "10")
     #   Scope          = Scope-Bein<3. Oktett der Bein-IP> (192.168.20.14   -> "Scope-Bein20")
@@ -613,10 +601,8 @@ function Show-NewPolicyDialog {
         $sub  = $DlgSubnet.Text.Trim()
         $bein = $DlgBeinIP.Text.Trim()
 
-        # 3. Oktett aus Client-Subnetz (vor dem /)
         $subTag = ""
         if ($sub -match '^\d{1,3}\.\d{1,3}\.(\d{1,3})\.') { $subTag = $matches[1] }
-        # 3. Oktett aus Bein-IP -> Scope-Benennung "Bein<Oktett>"
         $beinTag = ""
         if ($bein -match '^\d{1,3}\.\d{1,3}\.(\d{1,3})\.') { $beinTag = $matches[1] }
 
@@ -633,7 +619,6 @@ function Show-NewPolicyDialog {
     $DlgServer.Add_TextChanged($updateNames)
     $DlgSubnet.Add_TextChanged($updateNames)
     $DlgBeinIP.Add_TextChanged($updateNames)
-    # Wenn der User selbst tippt, Auto-Modus abschalten
     $DlgSubnetName.Add_GotKeyboardFocus({ $DlgSubnetName.Tag='' })
     $DlgScopeName.Add_GotKeyboardFocus({ $DlgScopeName.Tag='' })
     $DlgPolicyName.Add_GotKeyboardFocus({ $DlgPolicyName.Tag='' })
@@ -648,8 +633,7 @@ function Show-NewPolicyDialog {
         $scN = $DlgScopeName.Text.Trim()
         $poN = $DlgPolicyName.Text.Trim()
 
-        # --- Validierung ---
-        if (-not $srv) { $DlgInfo.Text = "Servername fehlt."; return }
+            if (-not $srv) { $DlgInfo.Text = "Servername fehlt."; return }
         if ($sub -notmatch '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$') { $DlgInfo.Text = "Subnetz muss CIDR sein, z.B. 192.168.10.0/24"; return }
         if ($bein -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { $DlgInfo.Text = "Bein-IP ist keine gueltige IPv4-Adresse."; return }
         if (-not $snN -or -not $scN -or -not $poN) { $DlgInfo.Text = "Namen duerfen nicht leer sein."; return }
@@ -669,28 +653,24 @@ function Show-NewPolicyDialog {
 
         $log = @()
         try {
-            # 1) Subnetz (nur falls nicht vorhanden)
             $existSub = Get-DnsServerClientSubnet -ComputerName $targetDC -Name $snN -ErrorAction SilentlyContinue
             if (-not $existSub) {
                 Add-DnsServerClientSubnet -ComputerName $targetDC -Name $snN -IPv4Subnet $sub -ErrorAction Stop
                 $log += "Subnetz '$snN' angelegt."
             } else { $log += "Subnetz '$snN' existierte bereits (wiederverwendet)." }
 
-            # 2) Scope (nur falls nicht vorhanden)
             $existScope = Get-DnsServerZoneScope -ComputerName $targetDC -ZoneName $zone -Name $scN -ErrorAction SilentlyContinue
             if (-not $existScope) {
                 Add-DnsServerZoneScope -ComputerName $targetDC -ZoneName $zone -Name $scN -ErrorAction Stop
                 $log += "Scope '$scN' angelegt."
             } else { $log += "Scope '$scN' existierte bereits (wiederverwendet)." }
 
-            # 3) A-Record im Scope (nur falls nicht vorhanden)
             $existRec = Get-DnsServerResourceRecord -ComputerName $targetDC -ZoneName $zone -ZoneScope $scN -Name $srv -RRType A -ErrorAction SilentlyContinue
             if (-not $existRec) {
                 Add-DnsServerResourceRecord -ComputerName $targetDC -ZoneName $zone -A -Name $srv -IPv4Address $bein -ZoneScope $scN -ErrorAction Stop
                 $log += "A-Record '$srv -> $bein' im Scope angelegt."
             } else { $log += "A-Record fuer '$srv' im Scope existierte bereits." }
 
-            # 4) Policy
             Add-DnsServerQueryResolutionPolicy -ComputerName $targetDC -Name $poN -Action ALLOW `
                 -ClientSubnet "EQ,$snN" -ZoneScope "$scN,1" -ZoneName $zone -Fqdn "EQ,$fqdn" -ErrorAction Stop
             $log += "Policy '$poN' angelegt."
@@ -710,9 +690,6 @@ function Show-NewPolicyDialog {
     }
 }
 
-# ======================================================================
-# AKTIV/INAKTIV UMSCHALTEN
-# ======================================================================
 function Toggle-Policy {
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
@@ -734,9 +711,6 @@ function Toggle-Policy {
     }
 }
 
-# ======================================================================
-# POLICY LOESCHEN
-# ======================================================================
 function Delete-Policy {
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
@@ -759,9 +733,7 @@ function Delete-Policy {
     }
 }
 
-# ======================================================================
-# POLICY AUF WEITERE DCs UEBERTRAGEN (komplette Einheit klonen)
-# ======================================================================
+# Klont eine komplette Policy-Einheit auf weitere DCs (Policies replizieren nicht von selbst)
 function Replicate-Policy {
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
@@ -775,7 +747,6 @@ function Replicate-Policy {
     Set-Status "Lese Quell-Policy '$polName' von '$srcDC' vollstaendig aus ..."
     $window.Dispatcher.Invoke([action]{}, "Render")
 
-    # --- Quell-Policy komplett rekonstruieren ---
     try {
         $pol = Get-DnsServerQueryResolutionPolicy -ComputerName $srcDC -ZoneName $zone -Name $polName -ErrorAction Stop
     } catch {
@@ -783,7 +754,6 @@ function Replicate-Policy {
         return
     }
 
-    # Subnetz-Name + Scope-Name + FQDN aus der Policy ziehen
     $subnetCrit = (Get-CriteriaValue $pol 'ClientSubnet')   # z.B. "EQ,Subnet-VLAN68"
     $fqdnCrit   = (Get-CriteriaValue $pol 'Fqdn')           # z.B. "EQ,srv-app.example.local."
     $scopeName  = ""
@@ -796,7 +766,6 @@ function Replicate-Policy {
         return
     }
 
-    # CIDR des Subnetzes vom Quell-DC holen
     try {
         $srcSubnet = Get-DnsServerClientSubnet -ComputerName $srcDC -Name $subnetName -ErrorAction Stop
         $cidr = ($srcSubnet.IPV4Subnet -join ',')
@@ -805,7 +774,6 @@ function Replicate-Policy {
         return
     }
 
-    # A-Record(s) im Quell-Scope holen
     $records = @()
     try {
         $recs = Get-DnsServerResourceRecord -ComputerName $srcDC -ZoneName $zone -ZoneScope $scopeName -RRType A -ErrorAction Stop
@@ -821,7 +789,6 @@ function Replicate-Policy {
         return
     }
 
-    # --- Ziel-DCs abfragen ---
     $recSummary = ($records | ForEach-Object { "$($_.Name) -> $($_.IP)" }) -join ", "
     $targetInput = Show-InputDialog -Title "Auf weitere DCs uebertragen" `
         -Prompt ("Quell-Policy '$polName' von '$srcDC':`n`n" +
@@ -846,26 +813,22 @@ function Replicate-Policy {
         "Uebertragung bestaetigen","YesNo","Question")
     if ($confirm -ne 'Yes') { return }
 
-    # --- Auf jeden Ziel-DC anwenden (idempotent) ---
     $resultLog = @()
     foreach ($dc in $targets) {
         $steps = @()
         try {
-            # 1) Subnetz
             $ex = Get-DnsServerClientSubnet -ComputerName $dc -Name $subnetName -ErrorAction SilentlyContinue
             if (-not $ex) {
                 Add-DnsServerClientSubnet -ComputerName $dc -Name $subnetName -IPv4Subnet $cidr -ErrorAction Stop
                 $steps += "Subnetz+"
             } else { $steps += "Subnetz=" }
 
-            # 2) Scope
             $ex = Get-DnsServerZoneScope -ComputerName $dc -ZoneName $zone -Name $scopeName -ErrorAction SilentlyContinue
             if (-not $ex) {
                 Add-DnsServerZoneScope -ComputerName $dc -ZoneName $zone -Name $scopeName -ErrorAction Stop
                 $steps += "Scope+"
             } else { $steps += "Scope=" }
 
-            # 3) Records (jeder im Quell-Scope gefundene A-Record)
             foreach ($rec in $records) {
                 $exR = Get-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -ZoneScope $scopeName -Name $rec.Name -RRType A -ErrorAction SilentlyContinue
                 if (-not $exR) {
@@ -874,7 +837,6 @@ function Replicate-Policy {
                 } else { $steps += "Rec($($rec.IP))=" }
             }
 
-            # 4) Policy
             $exP = Get-DnsServerQueryResolutionPolicy -ComputerName $dc -ZoneName $zone -Name $polName -ErrorAction SilentlyContinue
             if (-not $exP) {
                 Add-DnsServerQueryResolutionPolicy -ComputerName $dc -Name $polName -Action ALLOW `
@@ -893,7 +855,7 @@ function Replicate-Policy {
     Load-Data
 }
 
-# Kleiner generischer Eingabedialog (fuer Ziel-DC-Abfrage)
+# Generischer Eingabedialog
 function Show-InputDialog {
     param([string]$Title, [string]$Prompt, [string]$Default = "")
 [xml]$ix = @"
@@ -968,9 +930,7 @@ function Show-InputDialog {
     return $script:ixResult
 }
 
-# ======================================================================
-# POLICY BEARBEITEN (Ziel-Bein-IP, ProcessingOrder, Umbenennen)
-# ======================================================================
+# Bearbeitet Ziel-IP, ProcessingOrder und Name einer bestehenden Policy
 function Edit-Policy {
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
@@ -981,7 +941,6 @@ function Edit-Policy {
     $polName = $sel.Name
     $zone = $TxtZone.Text.Trim()
 
-    # Aktuellen Zustand der Policy auslesen
     try {
         $pol = Get-DnsServerQueryResolutionPolicy -ComputerName $dc -ZoneName $zone -Name $polName -ErrorAction Stop
     } catch {
@@ -994,7 +953,6 @@ function Edit-Policy {
     try { $scopeName = ($pol.Content | ForEach-Object { $_.ScopeName }) -join ',' } catch {}
     $curOrder   = $pol.ProcessingOrder
 
-    # Aktuelle Ziel-IP(s) aus dem Scope holen
     $curIP = ""
     $recName = ""
     try {
@@ -1113,7 +1071,6 @@ function Edit-Policy {
 
         $log = @()
         try {
-            # 1) Ziel-IP im Scope aendern (alten A-Record raus, neuen rein)
             if ($newIP -and $newIP -ne $curIP -and $scopeName -and $recName) {
                 $oldRec = Get-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -ZoneScope $scopeName -Name $recName -RRType A -ErrorAction Stop
                 Add-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -A -Name $recName -IPv4Address $newIP -ZoneScope $scopeName -ErrorAction Stop
@@ -1123,13 +1080,11 @@ function Edit-Policy {
                 $log += "Ziel-IP geaendert auf $newIP."
             }
 
-            # 2) ProcessingOrder aendern
             if ($newOrder -and [int]$newOrder -ne [int]$curOrder) {
                 Set-DnsServerQueryResolutionPolicy -ComputerName $dc -ZoneName $zone -Name $polName -ProcessingOrder ([uint32]$newOrder) -ErrorAction Stop
                 $log += "Reihenfolge gesetzt auf $newOrder."
             }
 
-            # 3) Umbenennen (= neu anlegen unter neuem Namen + alte loeschen)
             if ($newName -ne $polName) {
                 $orderForNew = if ($newOrder) { [uint32]$newOrder } else { [uint32]$curOrder }
                 Add-DnsServerQueryResolutionPolicy -ComputerName $dc -Name $newName -Action ALLOW `
@@ -1154,9 +1109,6 @@ function Edit-Policy {
     }
 }
 
-# ======================================================================
-# EVENTS
-# ======================================================================
 $BtnLoad.Add_Click({ Load-Data })
 $BtnExport.Add_Click({ Export-Data })
 $BtnNew.Add_Click({ Show-NewPolicyDialog })
