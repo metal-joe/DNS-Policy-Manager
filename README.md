@@ -1,128 +1,130 @@
 # DNS-GUI
 
-A graphical management tool for **Windows DNS Server Query Resolution Policies**, written in PowerShell + WPF.
+*🇩🇪 Deutsch · [🇬🇧 English](README.en.md)*
+
+Ein grafisches Verwaltungswerkzeug für **DNS Query Resolution Policies** des Windows-DNS-Servers, geschrieben in PowerShell + WPF.
 
 <img width="1217" height="728" alt="dns-policy-manager" src="https://github.com/user-attachments/assets/1a344ea4-74b4-4b2c-97cc-ed2500d62ae1" />
 
-The built-in Windows DNS Manager (`dnsmgmt.msc`) cannot display or edit DNS policies at all. If you use DNS policies — for example to give clients in different subnets different answers for the same hostname — you are otherwise limited to raw PowerShell commands. **DNS-GUI** brings that management into a usable graphical interface.
+Der mitgelieferte Windows-DNS-Manager (`dnsmgmt.msc`) kann DNS-Policies weder anzeigen noch bearbeiten. Wer Policies einsetzt — etwa um Clients in verschiedenen Subnetzen unterschiedliche Antworten für denselben Hostnamen zu geben — ist sonst auf reine PowerShell-Befehle angewiesen. **DNS-GUI** bringt diese Verwaltung in eine bedienbare grafische Oberfläche.
 
-> The user interface is in German. The code, comments and this documentation are structured so that the tool is easy to adapt.
+> Die Oberfläche ist auf Deutsch. Code und Kommentare sind so gehalten, dass sich das Tool leicht anpassen lässt.
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1-blue) ![Platform](https://img.shields.io/badge/platform-Windows%20Server-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
-## Why this exists
+## Wozu das Ganze
 
-A common scenario: a **multi-homed server** (one IP per network segment) is registered in DNS with several A records under the same name. Clients receive *all* of those IPs and may try to connect to one that is not reachable from their segment, causing timeouts (e.g. printing hangs at "connecting").
+Ein häufiges Szenario: Ein **multi-homed Server** (eine IP je Netzsegment) ist im DNS mit mehreren A-Records unter demselben Namen registriert. Clients bekommen *alle* diese IPs und versuchen unter Umständen, eine Adresse anzusprechen, die aus ihrem Segment gar nicht erreichbar ist — das führt zu Zeitüberschreitungen (z. B. hängt der Druckdialog bei „Verbindung wird hergestellt").
 
-DNS Query Resolution Policies solve this: each client subnet is answered with only the IP reachable from it. But the policy machinery (client subnets, zone scopes, query resolution policies) is invisible in the DNS Manager and tedious to manage by hand. This tool makes it practical.
+DNS Query Resolution Policies lösen das: Jedes Client-Subnetz erhält nur die für es erreichbare IP. Die dafür nötigen Bausteine (Client-Subnetze, Zone-Scopes, Query Resolution Policies) sind im DNS-Manager aber unsichtbar und von Hand mühsam zu pflegen. Dieses Tool macht das praktikabel.
 
-## Features
+## Funktionen
 
-- **View** all query resolution policies, client subnets and zone scopes — across multiple DCs at once.
-- **Create** a complete policy in one step via a wizard (client subnet + zone scope + A record + policy).
-- **Edit** an existing policy: target IP, processing order, rename.
-- **Enable / disable** and **delete** policies, with confirmation dialogs.
-- **Replicate to other DCs** — clones a complete policy unit to additional DCs (policies do *not* replicate on their own).
-- **Export** the current state as a text report (configuration record).
-- Dark, modern UI.
+- **Anzeigen** aller Query Resolution Policies, Client-Subnetze und Zone-Scopes — auch über mehrere DCs gleichzeitig.
+- **Anlegen** einer kompletten Policy in einem Schritt per Assistent (Client-Subnetz + Zone-Scope + A-Record + Policy).
+- **Bearbeiten** einer bestehenden Policy: Ziel-IP, Verarbeitungsreihenfolge, Umbenennen.
+- **Aktivieren / Deaktivieren** und **Löschen** von Policies, jeweils mit Sicherheitsabfrage.
+- **Auf weitere DCs übertragen** — klont eine komplette Policy-Einheit auf zusätzliche DCs (Policies replizieren nicht von selbst).
+- **Export** des aktuellen Stands als Textreport (Konfigurationsnachweis).
+- Dunkle, moderne Oberfläche.
 
-## Requirements
+## Voraussetzungen
 
-- **Windows PowerShell 5.1** (the script avoids PS7-only and `??`/ternary syntax for maximum compatibility; the `DnsServer` module is most reliable under 5.1).
-- The **`DnsServer`** PowerShell module — present on a Domain Controller, otherwise install RSAT:
+- **Windows PowerShell 5.1** (das Skript vermeidet PS7-spezifische sowie `??`-/ternäre Syntax für maximale Kompatibilität; das `DnsServer`-Modul läuft unter 5.1 am zuverlässigsten).
+- Das PowerShell-Modul **`DnsServer`** — auf einem Domänencontroller vorhanden, sonst per RSAT nachinstallieren:
   ```powershell
   Add-WindowsCapability -Online -Name 'Rsat.Dns.Tools~~~~0.0.1.0'
   ```
-- Run on a Domain Controller (or a machine with RSAT-DNS and rights to the target DC).
+- Ausführung auf einem Domänencontroller (oder einer Maschine mit RSAT-DNS und Rechten am Ziel-DC).
 
-## Usage
+## Verwendung
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\DNS-GUI.ps1
 ```
 
-1. Enter one or more DCs (comma-separated) and the DNS zone, then **Laden** (Load).
-2. Browse the three tabs: policies, client subnets, zone scopes & records.
-3. Use the action bar to create, edit, toggle, delete or replicate policies, or export a report.
+1. Einen oder mehrere DCs (durch Komma getrennt) und die DNS-Zone eingeben, dann **Laden**.
+2. Die drei Reiter durchsehen: Policies, Client-Subnetze, Zone-Scopes & Records.
+3. Über die Aktionsleiste Policies anlegen, bearbeiten, umschalten, löschen oder übertragen — oder einen Report exportieren.
 
-Write actions apply to the **first DC** in the list. See [`CHANGELOG.md`](CHANGELOG.md) for the version history.
+Schreibende Aktionen wirken auf den **ersten DC** in der Liste. Den Versionsverlauf findest du in [`CHANGELOG.md`](CHANGELOG.md).
 
-## Key concepts (and gotchas)
+## Wichtige Konzepte (und Stolpersteine)
 
-- **Zone scopes + A records replicate** via AD integration to all DCs.
-- **Client subnets and policies do NOT replicate** — they are local DNS server configuration and must exist on every DC that clients query. That is what *Replicate to other DCs* is for.
-- The **source IP as it arrives at the DC** decides whether a policy matches. If NAT sits between client and DC (e.g. a WLAN controller or a routing firewall interface), the arriving IP may differ from the client's local IP — bind the policy's client subnet to the address that actually arrives.
-- Multi-NIC DCs: multiple IPs on the same physical DC share one DNS service — one policy there covers requests via any of its interfaces. Separate DCs each need their own copy.
+- **Zone-Scopes + A-Records replizieren** über die AD-Integration auf alle DCs.
+- **Client-Subnetze und Policies replizieren NICHT** — sie sind lokale Konfiguration des jeweiligen DNS-Servers und müssen auf jedem DC vorhanden sein, den Clients abfragen. Genau dafür gibt es *Auf weitere DCs übertragen*.
+- Maßgeblich ist die **Quell-IP, mit der die Anfrage am DC ankommt**. Liegt NAT zwischen Client und DC (z. B. ein WLAN-Controller oder ein routendes Firewall-Interface), kann die ankommende IP von der lokalen Client-IP abweichen — dann muss das Client-Subnetz der Policy auf die tatsächlich ankommende Adresse zeigen.
+- Multi-NIC-DCs: Mehrere IPs auf demselben physischen DC teilen sich einen DNS-Dienst — eine Policy dort gilt für Anfragen über jedes seiner Interfaces. Separate DCs brauchen jeweils eine eigene Kopie.
 
-## Verifying a policy actually works
+## Prüfen, ob eine Policy wirklich greift
 
-A policy can look correct in the GUI and still not take effect — usually because the request reaches the DC with a different source IP (NAT), or because the client asked a DC that doesn't have the policy. Verify on both sides.
+Eine Policy kann in der GUI korrekt aussehen und trotzdem nicht wirken — meist, weil die Anfrage mit einer anderen Quell-IP am DC ankommt (NAT) oder weil der Client einen DC ohne die Policy gefragt hat. Daher auf beiden Seiten prüfen.
 
-### On the DC
+### Auf dem DC
 
-Confirm the policy, its client subnet and the scope record are present and enabled:
+Bestätigen, dass Policy, Client-Subnetz und Scope-Record vorhanden und aktiviert sind:
 
 ```powershell
-# Policy exists and is enabled?
+# Policy vorhanden und aktiviert?
 Get-DnsServerQueryResolutionPolicy -ZoneName "example.local" -Name "Pol-VLAN10-srv-app" |
   Format-List Name, ProcessingOrder, IsEnabled, Action, Criteria, Content
 
-# Client subnet has the expected CIDR?
+# Client-Subnetz mit dem erwarteten CIDR?
 Get-DnsServerClientSubnet -Name "Subnet-VLAN10"
 
-# Scope contains only the intended (reachable) leg?
+# Scope enthält nur das gewünschte (erreichbare) Bein?
 Get-DnsServerResourceRecord -ZoneName "example.local" -ZoneScope "Scope-Bein20" -RRType A
 ```
 
-If you run several DCs, repeat this on each one — policies and client subnets do **not** replicate (see *Key concepts*). The GUI's multi-DC view makes the gaps obvious: a policy showing on one DC but not another means that DC still needs it.
+Bei mehreren DCs auf jedem wiederholen — Policies und Client-Subnetze replizieren **nicht** (siehe *Wichtige Konzepte*). Die Mehr-DC-Ansicht des Tools macht Lücken sichtbar: Erscheint eine Policy auf einem DC, auf einem anderen aber nicht, fehlt sie dort noch.
 
-### From a client in the target segment (the real test)
+### Von einem Client im Zielsegment (der eigentliche Test)
 
-This is the test that matters, because it proves the policy fires for the source IP that actually arrives at the DC. Run it on a client **inside the VLAN/segment the policy is meant for**:
+Das ist der entscheidende Test, denn er beweist, dass die Policy für die Quell-IP greift, die tatsächlich am DC ankommt. Auf einem Client **innerhalb des VLANs/Segments ausführen, für das die Policy gedacht ist**:
 
 ```powershell
-# Clear any cached answer first
+# Zuerst zwischengespeicherte Antwort verwerfen
 ipconfig /flushdns
 
-# Ask the DC directly and check which IP comes back
+# Den DC direkt fragen und prüfen, welche IP zurückkommt
 Resolve-DnsName srv-app.example.local -Server 192.168.20.15 -Type A
 ```
 
-Expected result: **only the single leg** reachable from that segment — not the full list of all legs. If you still get every IP, the policy isn't matching for this client.
+Erwartetes Ergebnis: **nur das eine** aus diesem Segment erreichbare Bein — nicht die vollständige Liste aller Beine. Kommen weiterhin alle IPs zurück, greift die Policy für diesen Client nicht.
 
-Quick reachability check for the returned IP (should succeed from this segment):
+Schnelle Erreichbarkeitsprobe für die zurückgegebene IP (sollte aus diesem Segment klappen):
 
 ```powershell
-Test-NetConnection -ComputerName 192.168.20.14 -Port 445   # 445 = SMB; use the port your service needs
+Test-NetConnection -ComputerName 192.168.20.14 -Port 445   # 445 = SMB; den Port nehmen, den der Dienst braucht
 ```
 
-### If the client still gets all IPs
+### Wenn der Client weiterhin alle IPs bekommt
 
-- **Wrong DC asked.** The client queried a DC without this policy. Confirm which DNS server it uses (`Get-DnsClientServerAddress`) and make sure the policy exists there.
-- **NAT in the path.** The request reaches the DC with a translated source IP (common with WLAN controllers or routing firewalls), so it doesn't match the client subnet. Find the IP that actually arrives and bind the policy to that:
+- **Falscher DC gefragt.** Der Client hat einen DC ohne diese Policy abgefragt. Prüfen, welchen DNS-Server er nutzt (`Get-DnsClientServerAddress`), und sicherstellen, dass die Policy dort existiert.
+- **NAT im Pfad.** Die Anfrage kommt mit einer übersetzten Quell-IP am DC an (häufig bei WLAN-Controllern oder routenden Firewalls) und passt deshalb nicht aufs Client-Subnetz. Die tatsächlich ankommende IP ermitteln und die Policy darauf binden:
   ```powershell
-  # On the DC: briefly enable DNS debug logging, run one lookup from the client, then check the source IP
+  # Auf dem DC: kurz DNS-Debug-Logging aktivieren, eine Auflösung vom Client auslösen, dann Quell-IP prüfen
   Set-DnsServerDiagnostics -EnableLoggingToFile $true -LogFilePath "C:\Temp\dnsdebug.log" `
     -Queries $true -Answers $true -ReceivePackets $true -UdpPackets $true -TcpPackets $true -SendPackets $true
-  # ... trigger one lookup on the client (ipconfig /flushdns; Resolve-DnsName ...) ...
+  # ... auf dem Client eine Auflösung auslösen (ipconfig /flushdns; Resolve-DnsName ...) ...
   Select-String -Path "C:\Temp\dnsdebug.log" -Pattern "srv-app" | Select-Object -Last 5
-  Set-DnsServerDiagnostics -EnableLoggingToFile $false   # turn it off again
+  Set-DnsServerDiagnostics -EnableLoggingToFile $false   # danach wieder ausschalten
   ```
-  The source IP shown in the matching log line is the address the policy's client subnet must contain.
-- **Stale cache.** Run `ipconfig /flushdns` on the client and retry.
+  Die in der passenden Log-Zeile gezeigte Quell-IP ist die Adresse, die das Client-Subnetz der Policy enthalten muss.
+- **Veralteter Cache.** Auf dem Client `ipconfig /flushdns` ausführen und erneut testen.
 
-## Safety
+## Sicherheit
 
-This tool writes to production DNS. Recommended: try each action once against a **throwaway test policy** (create → edit → replicate to one DC → delete) and verify with *Load* before using it on real segments. As with any DNS change: do one, verify, then roll out.
+Das Tool schreibt in produktives DNS. Empfehlung: Jede Aktion einmal mit einer **unkritischen Test-Policy** durchspielen (Anlegen → Bearbeiten → auf einen DC übertragen → Löschen) und mit *Laden* prüfen, bevor sie auf echte Segmente angewandt wird. Grundsatz wie bei jeder DNS-Änderung: erst eine, verifizieren, dann ausrollen.
 
-All values shown in examples (`example.local`, `srv-app`, `192.168.10.0/24`, …) are placeholders — replace them with your own.
+Alle in Beispielen gezeigten Werte (`example.local`, `srv-app`, `192.168.10.0/24`, …) sind Platzhalter — durch eigene ersetzen.
 
-## License
+## Lizenz
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — siehe [`LICENSE`](LICENSE).
 
-## Disclaimer
+## Haftungsausschluss
 
-Provided as-is, without warranty. You are responsible for testing in your own environment before production use. Not affiliated with or endorsed by Microsoft.
+Bereitgestellt „wie besehen", ohne Gewähr. Die Verantwortung für das Testen in der eigenen Umgebung vor dem Produktiveinsatz liegt bei dir. Nicht mit Microsoft verbunden oder von Microsoft unterstützt.
