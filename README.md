@@ -56,6 +56,63 @@ Write actions apply to the **first DC** in the list. See [`CHANGELOG.md`](CHANGE
 - The **source IP as it arrives at the DC** decides whether a policy matches. If NAT sits between client and DC (e.g. a WLAN controller or a routing firewall interface), the arriving IP may differ from the client's local IP — bind the policy's client subnet to the address that actually arrives.
 - Multi-NIC DCs: multiple IPs on the same physical DC share one DNS service — one policy there covers requests via any of its interfaces. Separate DCs each need their own copy.
 
+## Verifying a policy actually works
+
+A policy can look correct in the GUI and still not take effect — usually because the request reaches the DC with a different source IP (NAT), or because the client asked a DC that doesn't have the policy. Verify on both sides.
+
+### On the DC
+
+Confirm the policy, its client subnet and the scope record are present and enabled:
+
+```powershell
+# Policy exists and is enabled?
+Get-DnsServerQueryResolutionPolicy -ZoneName "example.local" -Name "Pol-VLAN10-srv-app" |
+  Format-List Name, ProcessingOrder, IsEnabled, Action, Criteria, Content
+
+# Client subnet has the expected CIDR?
+Get-DnsServerClientSubnet -Name "Subnet-VLAN10"
+
+# Scope contains only the intended (reachable) leg?
+Get-DnsServerResourceRecord -ZoneName "example.local" -ZoneScope "Scope-Bein20" -RRType A
+```
+
+If you run several DCs, repeat this on each one — policies and client subnets do **not** replicate (see *Key concepts*). The GUI's multi-DC view makes the gaps obvious: a policy showing on one DC but not another means that DC still needs it.
+
+### From a client in the target segment (the real test)
+
+This is the test that matters, because it proves the policy fires for the source IP that actually arrives at the DC. Run it on a client **inside the VLAN/segment the policy is meant for**:
+
+```powershell
+# Clear any cached answer first
+ipconfig /flushdns
+
+# Ask the DC directly and check which IP comes back
+Resolve-DnsName srv-app.example.local -Server 192.168.20.15 -Type A
+```
+
+Expected result: **only the single leg** reachable from that segment — not the full list of all legs. If you still get every IP, the policy isn't matching for this client.
+
+Quick reachability check for the returned IP (should succeed from this segment):
+
+```powershell
+Test-NetConnection -ComputerName 192.168.20.14 -Port 445   # 445 = SMB; use the port your service needs
+```
+
+### If the client still gets all IPs
+
+- **Wrong DC asked.** The client queried a DC without this policy. Confirm which DNS server it uses (`Get-DnsClientServerAddress`) and make sure the policy exists there.
+- **NAT in the path.** The request reaches the DC with a translated source IP (common with WLAN controllers or routing firewalls), so it doesn't match the client subnet. Find the IP that actually arrives and bind the policy to that:
+  ```powershell
+  # On the DC: briefly enable DNS debug logging, run one lookup from the client, then check the source IP
+  Set-DnsServerDiagnostics -EnableLoggingToFile $true -LogFilePath "C:\Temp\dnsdebug.log" `
+    -Queries $true -Answers $true -ReceivePackets $true -UdpPackets $true -TcpPackets $true -SendPackets $true
+  # ... trigger one lookup on the client (ipconfig /flushdns; Resolve-DnsName ...) ...
+  Select-String -Path "C:\Temp\dnsdebug.log" -Pattern "srv-app" | Select-Object -Last 5
+  Set-DnsServerDiagnostics -EnableLoggingToFile $false   # turn it off again
+  ```
+  The source IP shown in the matching log line is the address the policy's client subnet must contain.
+- **Stale cache.** Run `ipconfig /flushdns` on the client and retry.
+
 ## Safety
 
 This tool writes to production DNS. Recommended: try each action once against a **throwaway test policy** (create → edit → replicate to one DC → delete) and verify with *Load* before using it on real segments. As with any DNS change: do one, verify, then roll out.
