@@ -4,6 +4,8 @@
 
 Ein grafisches Verwaltungswerkzeug für **DNS Query Resolution Policies** des Windows-DNS-Servers, geschrieben in PowerShell + WPF.
 
+<img width="1214" height="764" alt="dns-policy-manager" src="https://github.com/user-attachments/assets/d95cb177-784b-438b-a43f-7c65d03b3e66" />
+
 Der mitgelieferte Windows-DNS-Manager (`dnsmgmt.msc`) kann DNS-Policies weder anzeigen noch bearbeiten. Wer Policies einsetzt — etwa um Clients in verschiedenen Subnetzen unterschiedliche Antworten für denselben Hostnamen zu geben — ist sonst auf reine PowerShell-Befehle angewiesen. **DNS-GUI** bringt diese Verwaltung in eine bedienbare grafische Oberfläche.
 
 > Die Oberfläche ist auf Deutsch. Code und Kommentare sind so gehalten, dass sich das Tool leicht anpassen lässt.
