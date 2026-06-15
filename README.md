@@ -4,8 +4,6 @@
 
 Ein grafisches Verwaltungswerkzeug für **DNS Query Resolution Policies** des Windows-DNS-Servers, geschrieben in PowerShell + WPF.
 
-<img width="1217" height="728" alt="dns-policy-manager" src="https://github.com/user-attachments/assets/1a344ea4-74b4-4b2c-97cc-ed2500d62ae1" />
-
 Der mitgelieferte Windows-DNS-Manager (`dnsmgmt.msc`) kann DNS-Policies weder anzeigen noch bearbeiten. Wer Policies einsetzt — etwa um Clients in verschiedenen Subnetzen unterschiedliche Antworten für denselben Hostnamen zu geben — ist sonst auf reine PowerShell-Befehle angewiesen. **DNS-GUI** bringt diese Verwaltung in eine bedienbare grafische Oberfläche.
 
 > Die Oberfläche ist auf Deutsch. Code und Kommentare sind so gehalten, dass sich das Tool leicht anpassen lässt.
@@ -24,9 +22,11 @@ DNS Query Resolution Policies lösen das: Jedes Client-Subnetz erhält nur die f
 
 - **Anzeigen** aller Query Resolution Policies, Client-Subnetze und Zone-Scopes — auch über mehrere DCs gleichzeitig.
 - **Anlegen** einer kompletten Policy in einem Schritt per Assistent (Client-Subnetz + Zone-Scope + A-Record + Policy).
+- **Bulk-Import** aus CSV — viele Policies auf einmal anlegen (z. B. ein ganzes Set an VLANs). Komma- und semikolongetrennte Dateien werden erkannt; ungültige Zeilen werden übersprungen und in einer Bilanz gemeldet. Mit abschaltbarer Vorschau und mitgelieferter Vorlage.
 - **Bearbeiten** einer bestehenden Policy: Ziel-IP, Verarbeitungsreihenfolge, Umbenennen.
 - **Aktivieren / Deaktivieren** und **Löschen** von Policies, jeweils mit Sicherheitsabfrage.
-- **Auf weitere DCs übertragen** — klont eine komplette Policy-Einheit auf zusätzliche DCs (Policies replizieren nicht von selbst).
+- **Auf weitere DCs übertragen** — manuell gewählte Ziel-DCs.
+- **Auf alle DCs übertragen** — ermittelt alle DCs der Domäne automatisch (Quell-DC ausgenommen) und klont die Einheit dorthin (Policies replizieren nicht von selbst).
 - **Export** des aktuellen Stands als Textreport (Konfigurationsnachweis).
 - Dunkle, moderne Oberfläche.
 
@@ -50,6 +50,18 @@ powershell -ExecutionPolicy Bypass -File .\DNS-GUI.ps1
 3. Über die Aktionsleiste Policies anlegen, bearbeiten, umschalten, löschen oder übertragen — oder einen Report exportieren.
 
 Schreibende Aktionen wirken auf den **ersten DC** in der Liste. Den Versionsverlauf findest du in [`CHANGELOG.md`](CHANGELOG.md).
+
+### Bulk-Import per CSV
+
+Über **CSV-Vorlage** schreibt das Tool eine Beispieldatei zum Ausfüllen. Format:
+
+```csv
+Servername,Subnetz,ZielBeinIP,SubnetzName,ScopeName,PolicyName
+srv-app,192.168.30.0/24,192.168.20.14,,,
+srv-app,192.168.31.0/24,192.168.20.14,,,
+```
+
+Pflichtspalten sind `Servername`, `Subnetz` (CIDR) und `ZielBeinIP`. Die drei Namensspalten sind optional — bleiben sie leer, werden die Namen automatisch erzeugt. Komma oder Semikolon als Trennzeichen werden beide akzeptiert. Beim Import wählst du, ob auf den ersten DC oder auf alle DCs geschrieben wird; eine (abschaltbare) Vorschau zeigt alles vor dem Schreiben.
 
 ## Wichtige Konzepte (und Stolpersteine)
 

@@ -1,23 +1,25 @@
 <#
 .SYNOPSIS
-    DNS Policy Manager - GUI fuer Windows DNS Query Resolution Policies.
-
+    DNS Policy Manager - GUI fuer Windows DNS Query Resolution Policies
 .DESCRIPTION
-    Verwaltet DNS Server Query Resolution Policies ueber eine grafische
-    Oberflaeche - gedacht vor allem fuer den Fall, dass ein multi-homed Server
-    (mehrere A-Records, ein Bein je Segment) je nach Quell-Subnetz nur das
-    erreichbare Bein zurueckgeben soll.
+    Grafische Verwaltung von DNS Server Query Resolution Policies fuer den
+    Anwendungsfall "multi-homed Server segmentgerecht aufloesen".
 
-    Kann mehrere DCs gleichzeitig abfragen (Policies replizieren nicht, daher
-    ist der Vergleich ueber DCs hinweg wichtig), Policies/Subnetze/Scopes
-    anzeigen, neue Policies assistiert anlegen, bestehende bearbeiten,
-    aktivieren/deaktivieren, loeschen, auf weitere DCs uebertragen und den
-    Stand als Textreport exportieren. Schreibende Aktionen laufen ueber
-    Bestaetigungsdialoge und werden in der Statusleiste protokolliert.
+    Funktionen:
+      - Mehrere DCs abfragen (Policies replizieren nicht -> Vergleich noetig)
+      - Policies, Client-Subnetze und Zone-Scopes anzeigen
+      - NEU: Komplette Policy assistiert anlegen (Subnetz + Scope + A-Record + Policy)
+      - NEU: Policy aktivieren/deaktivieren
+      - NEU: Policy loeschen (mit Sicherheitsabfrage)
+      - Text-Export als Konfigurationsnachweis
+
+    SCHREIBENDE AKTIONEN sind durch Bestaetigungsdialoge geschuetzt und werden
+    in der Statusleiste protokolliert.
 
 .NOTES
-    Benoetigt das Modul "DnsServer" (auf einem DC vorhanden, sonst RSAT-DNS)
-    und DNS-Admin-Rechte auf dem Ziel-DC. Getestet unter Windows PowerShell 5.1.
+    Voraussetzung: PowerShell-Modul "DnsServer". Auf einem DC ausfuehren.
+    Schreibende Aktionen erfordern DNS-Admin-Rechte auf dem Ziel-DC.
+    Theme: Dark mode, Akzentfarbe #3B82F6
 #>
 
 #Requires -Version 5.1
@@ -36,7 +38,9 @@ if (-not (Get-Module -ListAvailable -Name DnsServer)) {
 }
 Import-Module DnsServer -ErrorAction SilentlyContinue
 
-# --- Hauptfenster ---
+# ======================================================================
+# HAUPTFENSTER-XAML
+# ======================================================================
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -316,8 +320,11 @@ Import-Module DnsServer -ErrorAction SilentlyContinue
             <StackPanel Orientation="Horizontal">
                 <Border Width="3" Background="{StaticResource Accent}" CornerRadius="2" Margin="0,2,12,2"/>
                 <Button x:Name="BtnNew" Content="Neue Policy" Style="{StaticResource PrimaryButton}"/>
+                <Button x:Name="BtnImport" Content="Import (CSV)" Style="{StaticResource PrimaryButton}"/>
+                <Button x:Name="BtnSample" Content="CSV-Vorlage" Style="{StaticResource GreyButton}"/>
                 <Button x:Name="BtnEdit" Content="Bearbeiten" Style="{StaticResource GreyButton}"/>
-                <Button x:Name="BtnReplicate" Content="Auf weitere DCs uebertragen" Style="{StaticResource GreyButton}"/>
+                <Button x:Name="BtnReplicate" Content="Auf weitere DCs" Style="{StaticResource GreyButton}"/>
+                <Button x:Name="BtnReplicateAll" Content="Auf alle DCs" Style="{StaticResource GreyButton}"/>
                 <Button x:Name="BtnToggle" Content="Aktiv / Inaktiv" Style="{StaticResource GreyButton}"/>
                 <Button x:Name="BtnDelete" Content="Loeschen" Style="{StaticResource GreyButton}"/>
             </StackPanel>
@@ -340,8 +347,11 @@ $TxtZone     = $window.FindName("TxtZone")
 $BtnLoad     = $window.FindName("BtnLoad")
 $BtnExport   = $window.FindName("BtnExport")
 $BtnNew      = $window.FindName("BtnNew")
+$BtnImport   = $window.FindName("BtnImport")
+$BtnSample   = $window.FindName("BtnSample")
 $BtnEdit     = $window.FindName("BtnEdit")
 $BtnReplicate= $window.FindName("BtnReplicate")
+$BtnReplicateAll = $window.FindName("BtnReplicateAll")
 $BtnToggle   = $window.FindName("BtnToggle")
 $BtnDelete   = $window.FindName("BtnDelete")
 $GridPolicies= $window.FindName("GridPolicies")
@@ -354,6 +364,7 @@ $TxtDCs.Text = $env:COMPUTERNAME
 $script:dataPolicies = @()
 $script:dataSubnets  = @()
 $script:dataScopes   = @()
+$script:skipImportPreview = $false
 
 function Set-Status([string]$msg) {
     $TxtStatus.Text = "[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg
@@ -374,7 +385,72 @@ function Get-CriteriaValue {
     return ""
 }
 
-# Laedt Policies/Subnetze/Scopes von den angegebenen DCs
+# Ermittelt alle DCs der Domaene (fuer "Auf alle DCs uebertragen").
+# Faellt auf den Ziel-DC zurueck, falls das AD-Modul fehlt.
+function Get-AllDCs {
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        return (Get-ADDomainController -Filter * -ErrorAction Stop |
+                Select-Object -ExpandProperty HostName | Sort-Object -Unique)
+    } catch {
+        return $null
+    }
+}
+
+# Legt eine komplette Policy-Einheit auf einem DC an (idempotent):
+# Subnetz -> Scope -> A-Record -> Policy. Gibt eine Kurz-Bilanz zurueck.
+# Wird vom Assistenten, vom Import und von der Uebertragung genutzt.
+function New-PolicyUnit {
+    param(
+        [string]$DC, [string]$Zone, [string]$Server, [string]$Cidr, [string]$BeinIP,
+        [string]$SubnetName, [string]$ScopeName, [string]$PolicyName
+    )
+    $fqdn = "$Server.$Zone"
+    $steps = @()
+
+    $ex = Get-DnsServerClientSubnet -ComputerName $DC -Name $SubnetName -ErrorAction SilentlyContinue
+    if (-not $ex) {
+        Add-DnsServerClientSubnet -ComputerName $DC -Name $SubnetName -IPv4Subnet $Cidr -ErrorAction Stop
+        $steps += "Subnetz+"
+    } else { $steps += "Subnetz=" }
+
+    $ex = Get-DnsServerZoneScope -ComputerName $DC -ZoneName $Zone -Name $ScopeName -ErrorAction SilentlyContinue
+    if (-not $ex) {
+        Add-DnsServerZoneScope -ComputerName $DC -ZoneName $Zone -Name $ScopeName -ErrorAction Stop
+        $steps += "Scope+"
+    } else { $steps += "Scope=" }
+
+    $ex = Get-DnsServerResourceRecord -ComputerName $DC -ZoneName $Zone -ZoneScope $ScopeName -Name $Server -RRType A -ErrorAction SilentlyContinue
+    if (-not $ex) {
+        Add-DnsServerResourceRecord -ComputerName $DC -ZoneName $Zone -A -Name $Server -IPv4Address $BeinIP -ZoneScope $ScopeName -ErrorAction Stop
+        $steps += "Record+"
+    } else { $steps += "Record=" }
+
+    $ex = Get-DnsServerQueryResolutionPolicy -ComputerName $DC -ZoneName $Zone -Name $PolicyName -ErrorAction SilentlyContinue
+    if (-not $ex) {
+        Add-DnsServerQueryResolutionPolicy -ComputerName $DC -Name $PolicyName -Action ALLOW `
+            -ClientSubnet "EQ,$SubnetName" -ZoneScope "$ScopeName,1" -ZoneName $Zone -Fqdn "EQ,$fqdn" -ErrorAction Stop
+        $steps += "Policy+"
+    } else { $steps += "Policy=" }
+
+    return ($steps -join " ")
+}
+
+# Leitet die Standardnamen aus Server/Subnetz/Bein-IP ab (gleiche Konvention wie der Assistent).
+function Get-AutoNames {
+    param([string]$Server, [string]$Cidr, [string]$BeinIP)
+    $subTag = ""; if ($Cidr  -match '^\d{1,3}\.\d{1,3}\.(\d{1,3})\.') { $subTag  = $matches[1] }
+    $beinTag= ""; if ($BeinIP -match '^\d{1,3}\.\d{1,3}\.(\d{1,3})\.') { $beinTag = $matches[1] }
+    return [PSCustomObject]@{
+        SubnetName = "Subnet-VLAN$subTag"
+        ScopeName  = "Scope-Bein$beinTag"
+        PolicyName = "Pol-VLAN$subTag-$Server"
+    }
+}
+
+# ======================================================================
+# LADE-LOGIK  (mit korrekter Record-Darstellung)
+# ======================================================================
 function Load-Data {
     $zone = $TxtZone.Text.Trim()
     $dcInput = $TxtDCs.Text.Trim()
@@ -422,7 +498,7 @@ function Load-Data {
                 if ($scName -eq $zone) { continue }
                 try {
                     $recs = Get-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -ZoneScope $scName -ErrorAction Stop
-                    # Nur A/AAAA/CNAME zeigen - NS/SOA der Scopes sind Rauschen
+                    # NUR aussagekraeftige Records zeigen: A, AAAA, CNAME. NS/SOA = Rauschen -> ausblenden.
                     $recs = $recs | Where-Object { $_.RecordType -in @('A','AAAA','CNAME') }
                     if (-not $recs) {
                         [void]$scpList.Add([PSCustomObject]@{
@@ -458,6 +534,9 @@ function Load-Data {
     Set-Status $msg
 }
 
+# ======================================================================
+# EXPORT
+# ======================================================================
 function Export-Data {
     if ($script:dataPolicies.Count -eq 0 -and $script:dataScopes.Count -eq 0) {
         [System.Windows.MessageBox]::Show("Keine Daten geladen.","Export","OK","Information") | Out-Null
@@ -483,7 +562,9 @@ function Export-Data {
     }
 }
 
-# Assistent: legt Subnetz, Scope, Record und Policy in einem Rutsch an
+# ======================================================================
+# ASSISTENT: NEUE POLICY (Subnetz + Scope + A-Record + Policy)
+# ======================================================================
 function Show-NewPolicyDialog {
     $targetDC = Get-TargetDC
     $zone = $TxtZone.Text.Trim()
@@ -590,6 +671,7 @@ function Show-NewPolicyDialog {
 
     $DlgDC.Text = $targetDC
 
+    # Auto-Vorschlag der Namen anhand der Eingaben.
     # Konvention (an Bestand angelehnt):
     #   Subnetz-Kuerzel = 3. Oktett des Client-Subnetzes  (192.168.10.0/24 -> "10")
     #   Scope          = Scope-Bein<3. Oktett der Bein-IP> (192.168.20.14   -> "Scope-Bein20")
@@ -601,8 +683,10 @@ function Show-NewPolicyDialog {
         $sub  = $DlgSubnet.Text.Trim()
         $bein = $DlgBeinIP.Text.Trim()
 
+        # 3. Oktett aus Client-Subnetz (vor dem /)
         $subTag = ""
         if ($sub -match '^\d{1,3}\.\d{1,3}\.(\d{1,3})\.') { $subTag = $matches[1] }
+        # 3. Oktett aus Bein-IP -> passt zu eurer Scope-Benennung "Bein20"
         $beinTag = ""
         if ($bein -match '^\d{1,3}\.\d{1,3}\.(\d{1,3})\.') { $beinTag = $matches[1] }
 
@@ -619,6 +703,7 @@ function Show-NewPolicyDialog {
     $DlgServer.Add_TextChanged($updateNames)
     $DlgSubnet.Add_TextChanged($updateNames)
     $DlgBeinIP.Add_TextChanged($updateNames)
+    # Wenn der User selbst tippt, Auto-Modus abschalten
     $DlgSubnetName.Add_GotKeyboardFocus({ $DlgSubnetName.Tag='' })
     $DlgScopeName.Add_GotKeyboardFocus({ $DlgScopeName.Tag='' })
     $DlgPolicyName.Add_GotKeyboardFocus({ $DlgPolicyName.Tag='' })
@@ -633,7 +718,8 @@ function Show-NewPolicyDialog {
         $scN = $DlgScopeName.Text.Trim()
         $poN = $DlgPolicyName.Text.Trim()
 
-            if (-not $srv) { $DlgInfo.Text = "Servername fehlt."; return }
+        # --- Validierung ---
+        if (-not $srv) { $DlgInfo.Text = "Servername fehlt."; return }
         if ($sub -notmatch '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$') { $DlgInfo.Text = "Subnetz muss CIDR sein, z.B. 192.168.10.0/24"; return }
         if ($bein -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { $DlgInfo.Text = "Bein-IP ist keine gueltige IPv4-Adresse."; return }
         if (-not $snN -or -not $scN -or -not $poN) { $DlgInfo.Text = "Namen duerfen nicht leer sein."; return }
@@ -653,24 +739,28 @@ function Show-NewPolicyDialog {
 
         $log = @()
         try {
+            # 1) Subnetz (nur falls nicht vorhanden)
             $existSub = Get-DnsServerClientSubnet -ComputerName $targetDC -Name $snN -ErrorAction SilentlyContinue
             if (-not $existSub) {
                 Add-DnsServerClientSubnet -ComputerName $targetDC -Name $snN -IPv4Subnet $sub -ErrorAction Stop
                 $log += "Subnetz '$snN' angelegt."
             } else { $log += "Subnetz '$snN' existierte bereits (wiederverwendet)." }
 
+            # 2) Scope (nur falls nicht vorhanden)
             $existScope = Get-DnsServerZoneScope -ComputerName $targetDC -ZoneName $zone -Name $scN -ErrorAction SilentlyContinue
             if (-not $existScope) {
                 Add-DnsServerZoneScope -ComputerName $targetDC -ZoneName $zone -Name $scN -ErrorAction Stop
                 $log += "Scope '$scN' angelegt."
             } else { $log += "Scope '$scN' existierte bereits (wiederverwendet)." }
 
+            # 3) A-Record im Scope (nur falls nicht vorhanden)
             $existRec = Get-DnsServerResourceRecord -ComputerName $targetDC -ZoneName $zone -ZoneScope $scN -Name $srv -RRType A -ErrorAction SilentlyContinue
             if (-not $existRec) {
                 Add-DnsServerResourceRecord -ComputerName $targetDC -ZoneName $zone -A -Name $srv -IPv4Address $bein -ZoneScope $scN -ErrorAction Stop
                 $log += "A-Record '$srv -> $bein' im Scope angelegt."
             } else { $log += "A-Record fuer '$srv' im Scope existierte bereits." }
 
+            # 4) Policy
             Add-DnsServerQueryResolutionPolicy -ComputerName $targetDC -Name $poN -Action ALLOW `
                 -ClientSubnet "EQ,$snN" -ZoneScope "$scN,1" -ZoneName $zone -Fqdn "EQ,$fqdn" -ErrorAction Stop
             $log += "Policy '$poN' angelegt."
@@ -690,6 +780,9 @@ function Show-NewPolicyDialog {
     }
 }
 
+# ======================================================================
+# AKTIV/INAKTIV UMSCHALTEN
+# ======================================================================
 function Toggle-Policy {
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
@@ -711,6 +804,9 @@ function Toggle-Policy {
     }
 }
 
+# ======================================================================
+# POLICY LOESCHEN
+# ======================================================================
 function Delete-Policy {
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
@@ -733,8 +829,10 @@ function Delete-Policy {
     }
 }
 
-# Klont eine komplette Policy-Einheit auf weitere DCs (Policies replizieren nicht von selbst)
+# Uebertraegt eine komplette Policy-Einheit auf weitere DCs (Policies replizieren nicht von selbst).
+# -AllDCs ermittelt die Ziel-DCs automatisch via AD statt per manueller Eingabe.
 function Replicate-Policy {
+    param([switch]$AllDCs)
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
         [System.Windows.MessageBox]::Show("Bitte zuerst eine Policy in der Tabelle auswaehlen.","Hinweis","OK","Information") | Out-Null
@@ -747,6 +845,7 @@ function Replicate-Policy {
     Set-Status "Lese Quell-Policy '$polName' von '$srcDC' vollstaendig aus ..."
     $window.Dispatcher.Invoke([action]{}, "Render")
 
+    # --- Quell-Policy komplett rekonstruieren ---
     try {
         $pol = Get-DnsServerQueryResolutionPolicy -ComputerName $srcDC -ZoneName $zone -Name $polName -ErrorAction Stop
     } catch {
@@ -754,7 +853,8 @@ function Replicate-Policy {
         return
     }
 
-    $subnetCrit = (Get-CriteriaValue $pol 'ClientSubnet')   # z.B. "EQ,Subnet-VLAN68"
+    # Subnetz-Name + Scope-Name + FQDN aus der Policy ziehen
+    $subnetCrit = (Get-CriteriaValue $pol 'ClientSubnet')   # z.B. "EQ,Subnet-VLAN10"
     $fqdnCrit   = (Get-CriteriaValue $pol 'Fqdn')           # z.B. "EQ,srv-app.example.local."
     $scopeName  = ""
     try { $scopeName = ($pol.Content | ForEach-Object { $_.ScopeName }) -join ',' } catch {}
@@ -766,6 +866,7 @@ function Replicate-Policy {
         return
     }
 
+    # CIDR des Subnetzes vom Quell-DC holen
     try {
         $srcSubnet = Get-DnsServerClientSubnet -ComputerName $srcDC -Name $subnetName -ErrorAction Stop
         $cidr = ($srcSubnet.IPV4Subnet -join ',')
@@ -774,6 +875,7 @@ function Replicate-Policy {
         return
     }
 
+    # A-Record(s) im Quell-Scope holen
     $records = @()
     try {
         $recs = Get-DnsServerResourceRecord -ComputerName $srcDC -ZoneName $zone -ZoneScope $scopeName -RRType A -ErrorAction Stop
@@ -789,46 +891,71 @@ function Replicate-Policy {
         return
     }
 
+    # --- Ziel-DCs ermitteln: automatisch (alle) oder per Eingabe ---
     $recSummary = ($records | ForEach-Object { "$($_.Name) -> $($_.IP)" }) -join ", "
-    $targetInput = Show-InputDialog -Title "Auf weitere DCs uebertragen" `
-        -Prompt ("Quell-Policy '$polName' von '$srcDC':`n`n" +
-                 "  Subnetz : $subnetName = $cidr`n" +
-                 "  Scope   : $scopeName`n" +
-                 "  Record  : $recSummary`n" +
-                 "  FQDN    : $fqdnValue`n`n" +
-                 "Ziel-DC(s) eingeben (durch Komma getrennt):") `
-        -Default ""
-    if ([string]::IsNullOrWhiteSpace($targetInput)) { return }
 
-    $targets = $targetInput -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ne $srcDC }
-    if ($targets.Count -eq 0) {
-        [System.Windows.MessageBox]::Show("Keine gueltigen Ziel-DCs (Quell-DC wird ausgeschlossen).","Hinweis","OK","Information") | Out-Null
-        return
+    if ($AllDCs) {
+        $allDC = Get-AllDCs
+        if (-not $allDC) {
+            [System.Windows.MessageBox]::Show("Konnte die DC-Liste nicht ermitteln (ActiveDirectory-Modul fehlt?).`nBitte 'Auf weitere DCs' mit manueller Eingabe nutzen.","Hinweis","OK","Warning") | Out-Null
+            return
+        }
+        # Quell-DC ausschliessen (Namensvergleich tolerant: Kurzname vs. FQDN)
+        $srcShort = ($srcDC -split '\.')[0]
+        $targets = $allDC | Where-Object {
+            $tShort = ($_ -split '\.')[0]
+            $tShort -ne $srcShort -and $_ -ne $srcDC
+        }
+        if ($targets.Count -eq 0) {
+            [System.Windows.MessageBox]::Show("Es wurden keine weiteren DCs gefunden (nur der Quell-DC).","Hinweis","OK","Information") | Out-Null
+            return
+        }
+    } else {
+        $targetInput = Show-InputDialog -Title "Auf weitere DCs uebertragen" `
+            -Prompt ("Quell-Policy '$polName' von '$srcDC':`n`n" +
+                     "  Subnetz : $subnetName = $cidr`n" +
+                     "  Scope   : $scopeName`n" +
+                     "  Record  : $recSummary`n" +
+                     "  FQDN    : $fqdnValue`n`n" +
+                     "Ziel-DC(s) eingeben (durch Komma getrennt):") `
+            -Default ""
+        if ([string]::IsNullOrWhiteSpace($targetInput)) { return }
+
+        $targets = $targetInput -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ne $srcDC }
+        if ($targets.Count -eq 0) {
+            [System.Windows.MessageBox]::Show("Keine gueltigen Ziel-DCs (Quell-DC wird ausgeschlossen).","Hinweis","OK","Information") | Out-Null
+            return
+        }
     }
 
+    $titleWord = if ($AllDCs) { "ALLE uebrigen DCs ($($targets.Count))" } else { "folgende DC(s)" }
     $confirm = [System.Windows.MessageBox]::Show(
-        "Die komplette Einheit wird auf folgende DC(s) uebertragen:`n`n  $($targets -join "`n  ")`n`n" +
+        "Die komplette Einheit wird auf $titleWord uebertragen:`n`n  $($targets -join "`n  ")`n`n" +
         "Pro Ziel-DC werden angelegt (falls noch nicht vorhanden):`n" +
         "  - Client-Subnetz $subnetName`n  - Zone-Scope $scopeName`n  - A-Record(s)`n  - Policy $polName`n`nFortfahren?",
         "Uebertragung bestaetigen","YesNo","Question")
     if ($confirm -ne 'Yes') { return }
 
+    # --- Auf jeden Ziel-DC anwenden (idempotent) ---
     $resultLog = @()
     foreach ($dc in $targets) {
         $steps = @()
         try {
+            # 1) Subnetz
             $ex = Get-DnsServerClientSubnet -ComputerName $dc -Name $subnetName -ErrorAction SilentlyContinue
             if (-not $ex) {
                 Add-DnsServerClientSubnet -ComputerName $dc -Name $subnetName -IPv4Subnet $cidr -ErrorAction Stop
                 $steps += "Subnetz+"
             } else { $steps += "Subnetz=" }
 
+            # 2) Scope
             $ex = Get-DnsServerZoneScope -ComputerName $dc -ZoneName $zone -Name $scopeName -ErrorAction SilentlyContinue
             if (-not $ex) {
                 Add-DnsServerZoneScope -ComputerName $dc -ZoneName $zone -Name $scopeName -ErrorAction Stop
                 $steps += "Scope+"
             } else { $steps += "Scope=" }
 
+            # 3) Records (jeder im Quell-Scope gefundene A-Record)
             foreach ($rec in $records) {
                 $exR = Get-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -ZoneScope $scopeName -Name $rec.Name -RRType A -ErrorAction SilentlyContinue
                 if (-not $exR) {
@@ -837,6 +964,7 @@ function Replicate-Policy {
                 } else { $steps += "Rec($($rec.IP))=" }
             }
 
+            # 4) Policy
             $exP = Get-DnsServerQueryResolutionPolicy -ComputerName $dc -ZoneName $zone -Name $polName -ErrorAction SilentlyContinue
             if (-not $exP) {
                 Add-DnsServerQueryResolutionPolicy -ComputerName $dc -Name $polName -Action ALLOW `
@@ -855,7 +983,7 @@ function Replicate-Policy {
     Load-Data
 }
 
-# Generischer Eingabedialog
+# Kleiner generischer Eingabedialog (fuer Ziel-DC-Abfrage)
 function Show-InputDialog {
     param([string]$Title, [string]$Prompt, [string]$Default = "")
 [xml]$ix = @"
@@ -930,7 +1058,9 @@ function Show-InputDialog {
     return $script:ixResult
 }
 
-# Bearbeitet Ziel-IP, ProcessingOrder und Name einer bestehenden Policy
+# ======================================================================
+# POLICY BEARBEITEN (Ziel-Bein-IP, ProcessingOrder, Umbenennen)
+# ======================================================================
 function Edit-Policy {
     $sel = $GridPolicies.SelectedItem
     if (-not $sel) {
@@ -941,6 +1071,7 @@ function Edit-Policy {
     $polName = $sel.Name
     $zone = $TxtZone.Text.Trim()
 
+    # Aktuellen Zustand der Policy auslesen
     try {
         $pol = Get-DnsServerQueryResolutionPolicy -ComputerName $dc -ZoneName $zone -Name $polName -ErrorAction Stop
     } catch {
@@ -953,6 +1084,7 @@ function Edit-Policy {
     try { $scopeName = ($pol.Content | ForEach-Object { $_.ScopeName }) -join ',' } catch {}
     $curOrder   = $pol.ProcessingOrder
 
+    # Aktuelle Ziel-IP(s) aus dem Scope holen
     $curIP = ""
     $recName = ""
     try {
@@ -1071,6 +1203,7 @@ function Edit-Policy {
 
         $log = @()
         try {
+            # 1) Ziel-IP im Scope aendern (alten A-Record raus, neuen rein)
             if ($newIP -and $newIP -ne $curIP -and $scopeName -and $recName) {
                 $oldRec = Get-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -ZoneScope $scopeName -Name $recName -RRType A -ErrorAction Stop
                 Add-DnsServerResourceRecord -ComputerName $dc -ZoneName $zone -A -Name $recName -IPv4Address $newIP -ZoneScope $scopeName -ErrorAction Stop
@@ -1080,11 +1213,13 @@ function Edit-Policy {
                 $log += "Ziel-IP geaendert auf $newIP."
             }
 
+            # 2) ProcessingOrder aendern
             if ($newOrder -and [int]$newOrder -ne [int]$curOrder) {
                 Set-DnsServerQueryResolutionPolicy -ComputerName $dc -ZoneName $zone -Name $polName -ProcessingOrder ([uint32]$newOrder) -ErrorAction Stop
                 $log += "Reihenfolge gesetzt auf $newOrder."
             }
 
+            # 3) Umbenennen (= neu anlegen unter neuem Namen + alte loeschen)
             if ($newName -ne $polName) {
                 $orderForNew = if ($newOrder) { [uint32]$newOrder } else { [uint32]$curOrder }
                 Add-DnsServerQueryResolutionPolicy -ComputerName $dc -Name $newName -Action ALLOW `
@@ -1109,11 +1244,204 @@ function Edit-Policy {
     }
 }
 
+# ======================================================================
+# Schreibt eine Beispiel-/Vorlagen-CSV mit Kommentarzeile und Beispieldaten.
+function Export-SampleCsv {
+    $dlg = New-Object Microsoft.Win32.SaveFileDialog
+    $dlg.Filter = "CSV-Datei (*.csv)|*.csv"
+    $dlg.FileName = "DNS-Policy-Import-Vorlage.csv"
+    if (-not $dlg.ShowDialog()) { return }
+
+    $lines = @(
+        "# DNS-Policy Bulk-Import - Vorlage",
+        "# Pflicht: Servername, Subnetz (CIDR), ZielBeinIP",
+        "# Optional: SubnetzName, ScopeName, PolicyName (leer = automatisch)",
+        "# Trennzeichen Komma ODER Semikolon. Zeilen mit # werden ignoriert.",
+        "Servername,Subnetz,ZielBeinIP,SubnetzName,ScopeName,PolicyName",
+        "srv-app,192.168.30.0/24,192.168.20.14,,,",
+        "srv-app,192.168.31.0/24,192.168.20.14,,,",
+        "srv-app,192.168.32.0/24,192.168.20.14,Subnet-Custom32,Scope-Bein20,Pol-Custom32-srv-app"
+    )
+    try {
+        $lines | Out-File -FilePath $dlg.FileName -Encoding UTF8
+        Set-Status "Beispiel-CSV gespeichert: $($dlg.FileName)"
+        [System.Windows.MessageBox]::Show("Vorlage gespeichert:`n$($dlg.FileName)`n`nDie Datei in Excel ausfuellen und dann ueber 'Import (CSV)' einlesen.","Vorlage erstellt","OK","Information") | Out-Null
+    } catch {
+        [System.Windows.MessageBox]::Show("Konnte Vorlage nicht speichern:`n$($_.Exception.Message)","Fehler","OK","Error") | Out-Null
+    }
+}
+
+# Liest eine CSV (komma- ODER semikolongetrennt), validiert die Zeilen und
+# legt pro gueltiger Zeile eine komplette Policy-Einheit an. Mit Vorschau
+# (abschaltbar) und Wahl des Ziels (erster DC oder alle DCs).
+function Import-PoliciesCsv {
+    $zone = $TxtZone.Text.Trim()
+    if (-not $zone) { [System.Windows.MessageBox]::Show("Bitte zuerst eine Zone angeben.","Hinweis","OK","Information") | Out-Null; return }
+
+    $ofd = New-Object Microsoft.Win32.OpenFileDialog
+    $ofd.Filter = "CSV-Datei (*.csv)|*.csv|Alle Dateien (*.*)|*.*"
+    $ofd.Title = "Import-CSV auswaehlen"
+    if (-not $ofd.ShowDialog()) { return }
+
+    # Rohzeilen lesen, Kommentar-/Leerzeilen raus
+    try {
+        $raw = Get-Content -Path $ofd.FileName -ErrorAction Stop | Where-Object { $_.Trim() -and $_ -notmatch '^\s*#' }
+    } catch {
+        [System.Windows.MessageBox]::Show("Datei konnte nicht gelesen werden:`n$($_.Exception.Message)","Fehler","OK","Error") | Out-Null; return
+    }
+    if ($raw.Count -lt 2) { [System.Windows.MessageBox]::Show("Die CSV enthaelt keine Datenzeilen.","Hinweis","OK","Information") | Out-Null; return }
+
+    # Trennzeichen automatisch erkennen (Semikolon bevorzugt, wenn vorhanden)
+    $delim = if ($raw[0] -match ';') { ';' } else { ',' }
+    $rows = $raw | ConvertFrom-Csv -Delimiter $delim
+
+    # Spalten tolerant zuordnen (Gross-/Kleinschreibung egal)
+    $cols = $rows[0].PSObject.Properties.Name
+    function Find-Col($cands) { foreach ($c in $cands) { $m = $cols | Where-Object { $_.Trim().ToLower() -eq $c }; if ($m) { return $m } }; return $null }
+    $cServer = Find-Col @('servername','server')
+    $cSubnet = Find-Col @('subnetz','subnet','cidr')
+    $cBein   = Find-Col @('zielbeinip','beinip','zielip','ip')
+    $cSubN   = Find-Col @('subnetzname','subnetname')
+    $cScopeN = Find-Col @('scopename')
+    $cPolN   = Find-Col @('policyname','policy')
+
+    if (-not $cServer -or -not $cSubnet -or -not $cBein) {
+        [System.Windows.MessageBox]::Show("Pflichtspalten fehlen. Benoetigt: Servername, Subnetz, ZielBeinIP.`nGefunden: $($cols -join ', ')","Fehler","OK","Error") | Out-Null; return
+    }
+
+    # Validieren + Plan aufbauen
+    $plan = @(); $errors = @(); $ln = 1
+    foreach ($r in $rows) {
+        $ln++
+        $srv  = "$($r.$cServer)".Trim()
+        $sub  = "$($r.$cSubnet)".Trim()
+        $bein = "$($r.$cBein)".Trim()
+        if (-not $srv -and -not $sub -and -not $bein) { continue }  # Leerzeile
+        if (-not $srv) { $errors += "Zeile $ln`: Servername fehlt"; continue }
+        if ($sub -notmatch '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$') { $errors += "Zeile $ln`: Subnetz '$sub' ist kein gueltiges CIDR"; continue }
+        if ($bein -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { $errors += "Zeile $ln`: ZielBeinIP '$bein' ist keine gueltige IPv4"; continue }
+
+        $auto = Get-AutoNames -Server $srv -Cidr $sub -BeinIP $bein
+        $snN = if ($cSubN)   { "$($r.$cSubN)".Trim() }   else { "" }
+        $scN = if ($cScopeN) { "$($r.$cScopeN)".Trim() } else { "" }
+        $poN = if ($cPolN)   { "$($r.$cPolN)".Trim() }   else { "" }
+        if (-not $snN) { $snN = $auto.SubnetName }
+        if (-not $scN) { $scN = $auto.ScopeName }
+        if (-not $poN) { $poN = $auto.PolicyName }
+
+        $plan += [PSCustomObject]@{ Server=$srv; Subnet=$sub; Bein=$bein; SubnetName=$snN; ScopeName=$scN; PolicyName=$poN }
+    }
+
+    if ($plan.Count -eq 0) {
+        [System.Windows.MessageBox]::Show("Keine gueltigen Zeilen gefunden.`n`n" + ($errors -join "`n"),"Import","OK","Warning") | Out-Null; return
+    }
+
+    # Ziel waehlen: erster DC oder alle DCs
+    $targetChoice = [System.Windows.MessageBox]::Show(
+        "Wohin sollen die $($plan.Count) Policies geschrieben werden?`n`n" +
+        "JA  = auf ALLE DCs der Domaene`n" +
+        "NEIN = nur auf den ersten/Ziel-DC ($(Get-TargetDC))`n" +
+        "ABBRECHEN = Import abbrechen",
+        "Ziel waehlen","YesNoCancel","Question")
+    if ($targetChoice -eq 'Cancel') { return }
+
+    $targetDCs = @()
+    if ($targetChoice -eq 'Yes') {
+        $all = Get-AllDCs
+        if (-not $all) { [System.Windows.MessageBox]::Show("DC-Liste nicht ermittelbar (AD-Modul fehlt?). Import abgebrochen.","Fehler","OK","Error") | Out-Null; return }
+        $targetDCs = $all
+    } else {
+        $targetDCs = @(Get-TargetDC)
+    }
+
+    # Vorschau (abschaltbar via $script:skipImportPreview)
+    if (-not $script:skipImportPreview) {
+        $preview = ($plan | ForEach-Object { "  $($_.Server)  $($_.Subnet) -> $($_.Bein)   [$($_.PolicyName)]" }) -join "`n"
+        $errTxt = if ($errors.Count) { "`n`nUEBERSPRUNGEN ($($errors.Count)):`n" + ($errors -join "`n") } else { "" }
+        $dcTxt = if ($targetDCs.Count -gt 1) { "ALLE $($targetDCs.Count) DCs" } else { $targetDCs[0] }
+        $ok = Show-ImportPreview -Count $plan.Count -Target $dcTxt -Body ($preview + $errTxt)
+        if (-not $ok) { return }
+    }
+
+    # Anlegen
+    Set-Status "Import laeuft ..."
+    $window.Dispatcher.Invoke([action]{}, "Render")
+    $resultLog = @(); $okCount = 0; $failCount = 0
+    foreach ($dc in $targetDCs) {
+        foreach ($p in $plan) {
+            try {
+                $bilanz = New-PolicyUnit -DC $dc -Zone $zone -Server $p.Server -Cidr $p.Subnet -BeinIP $p.Bein `
+                    -SubnetName $p.SubnetName -ScopeName $p.ScopeName -PolicyName $p.PolicyName
+                $resultLog += "OK  $dc  $($p.PolicyName) : $bilanz"
+                $okCount++
+            } catch {
+                $resultLog += "FEHLER  $dc  $($p.PolicyName) : $($_.Exception.Message)"
+                $failCount++
+            }
+        }
+    }
+
+    $summary = "Import abgeschlossen.`n`nErfolgreich: $okCount`nFehler: $failCount" + $(if ($errors.Count){"`nUebersprungen (ungueltig): $($errors.Count)"}else{""})
+    [System.Windows.MessageBox]::Show($summary + "`n`n" + ($resultLog -join "`n"), "Import-Ergebnis", "OK", "Information") | Out-Null
+    Set-Status "Import: $okCount OK, $failCount Fehler, $($errors.Count) uebersprungen."
+    Load-Data
+}
+
+# Vorschau-Dialog fuer den Import. Gibt $true zurueck, wenn der User bestaetigt.
+# Die Checkbox merkt sich "kuenftig nicht mehr fragen" in $script:skipImportPreview.
+function Show-ImportPreview {
+    param([int]$Count, [string]$Target, [string]$Body)
+[xml]$px = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Import-Vorschau" Height="560" Width="680"
+        WindowStartupLocation="CenterScreen" Background="#1A1A1C" ResizeMode="NoResize">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Border Grid.Row="0" Background="#242427" Padding="16,12">
+            <StackPanel Orientation="Horizontal">
+                <Border Width="5" Background="#3B82F6" Margin="0,0,10,0"/>
+                <TextBlock x:Name="PvTitle" Foreground="White" FontSize="15" FontWeight="Bold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+        <ScrollViewer Grid.Row="1" Margin="16,12" VerticalScrollBarVisibility="Auto">
+            <TextBlock x:Name="PvBody" Foreground="#D6D6DA" FontFamily="Consolas" FontSize="12" TextWrapping="NoWrap"/>
+        </ScrollViewer>
+        <Border Grid.Row="2" Background="#242427" Padding="16,12" BorderBrush="#3A3A3F" BorderThickness="0,1,0,0">
+            <Grid>
+                <CheckBox x:Name="PvSkip" Content="Vorschau kuenftig nicht mehr anzeigen" Foreground="#9A9AA2" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="PvOk" Content="Importieren" Width="130" Height="32" Background="#3B82F6" Foreground="White" BorderThickness="0" FontWeight="SemiBold" Cursor="Hand" Margin="0,0,8,0"/>
+                    <Button x:Name="PvCancel" Content="Abbrechen" Width="110" Height="32" Background="#2D2D31" Foreground="White" BorderThickness="0" Cursor="Hand"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
+"@
+    $pr = New-Object System.Xml.XmlNodeReader $px
+    $pw = [Windows.Markup.XamlReader]::Load($pr)
+    $PvTitle = $pw.FindName("PvTitle"); $PvBody = $pw.FindName("PvBody")
+    $PvSkip = $pw.FindName("PvSkip"); $PvOk = $pw.FindName("PvOk"); $PvCancel = $pw.FindName("PvCancel")
+    $PvTitle.Text = "$Count Policies -> $Target"
+    $PvBody.Text = $Body
+    $script:pvResult = $false
+    $PvOk.Add_Click({ if ($PvSkip.IsChecked) { $script:skipImportPreview = $true }; $script:pvResult = $true; $pw.Close() })
+    $PvCancel.Add_Click({ $script:pvResult = $false; $pw.Close() })
+    $pw.ShowDialog() | Out-Null
+    return $script:pvResult
+}
+
+# EVENTS
+# ======================================================================
 $BtnLoad.Add_Click({ Load-Data })
 $BtnExport.Add_Click({ Export-Data })
 $BtnNew.Add_Click({ Show-NewPolicyDialog })
+$BtnImport.Add_Click({ Import-PoliciesCsv })
+$BtnSample.Add_Click({ Export-SampleCsv })
 $BtnEdit.Add_Click({ Edit-Policy })
 $BtnReplicate.Add_Click({ Replicate-Policy })
+$BtnReplicateAll.Add_Click({ Replicate-Policy -AllDCs })
 $BtnToggle.Add_Click({ Toggle-Policy })
 $BtnDelete.Add_Click({ Delete-Policy })
 $TxtDCs.Add_KeyDown({ if ($_.Key -eq 'Return') { Load-Data } })

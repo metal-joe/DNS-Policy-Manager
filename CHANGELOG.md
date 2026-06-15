@@ -3,6 +3,21 @@
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com).
 Newest version first.
 
+## [1.5] - 2026-06-12
+### Added
+- **CSV bulk import**: create many policies at once from a CSV file. Columns
+  `Servername, Subnetz, ZielBeinIP` are required; `SubnetzName, ScopeName,
+  PolicyName` are optional (left blank = auto-generated). Comma- and
+  semicolon-delimited files are both accepted. Invalid rows are skipped (not
+  aborting the whole import) and reported in a summary. An optional preview
+  dialog lists everything before writing and can be switched off.
+- **Export sample CSV**: writes a ready-to-fill template with header and example
+  rows.
+- **Replicate to all DCs**: one click clones a policy unit to every DC in the
+  domain (discovered via `Get-ADDomainController`), excluding the source DC,
+  with a confirmation listing the targets. Complements the existing manual
+  "replicate to other DCs".
+
 ## [1.4] - 2026-06-11
 ### Changed
 - Modernized UI: dark theme with rounded corners, hover effects on buttons and

@@ -4,8 +4,6 @@
 
 A graphical management tool for **Windows DNS Server Query Resolution Policies**, written in PowerShell + WPF.
 
-<img width="1217" height="728" alt="dns-policy-manager" src="https://github.com/user-attachments/assets/1a344ea4-74b4-4b2c-97cc-ed2500d62ae1" />
-
 The built-in Windows DNS Manager (`dnsmgmt.msc`) cannot display or edit DNS policies at all. If you use DNS policies — for example to give clients in different subnets different answers for the same hostname — you are otherwise limited to raw PowerShell commands. **DNS-GUI** brings that management into a usable graphical interface.
 
 > The user interface is in German. The code, comments and this documentation are structured so that the tool is easy to adapt.
@@ -24,9 +22,11 @@ DNS Query Resolution Policies solve this: each client subnet is answered with on
 
 - **View** all query resolution policies, client subnets and zone scopes — across multiple DCs at once.
 - **Create** a complete policy in one step via a wizard (client subnet + zone scope + A record + policy).
+- **Bulk import** from CSV — create many policies at once (e.g. a whole set of VLANs). Comma- and semicolon-delimited files are both detected; invalid rows are skipped and reported in a summary. Optional preview and a built-in template.
 - **Edit** an existing policy: target IP, processing order, rename.
 - **Enable / disable** and **delete** policies, with confirmation dialogs.
-- **Replicate to other DCs** — clones a complete policy unit to additional DCs (policies do *not* replicate on their own).
+- **Replicate to other DCs** — manually chosen target DCs.
+- **Replicate to all DCs** — discovers every DC in the domain automatically (excluding the source) and clones the unit there (policies do *not* replicate on their own).
 - **Export** the current state as a text report (configuration record).
 - Dark, modern UI.
 
@@ -50,6 +50,20 @@ powershell -ExecutionPolicy Bypass -File .\DNS-GUI.ps1
 3. Use the action bar to create, edit, toggle, delete or replicate policies, or export a report.
 
 Write actions apply to the **first DC** in the list. See [`CHANGELOG.md`](CHANGELOG.md) for the version history.
+
+### Bulk import via CSV
+
+**Export sample CSV** writes a template to fill in. Format:
+
+```csv
+Servername,Subnetz,ZielBeinIP,SubnetzName,ScopeName,PolicyName
+srv-app,192.168.30.0/24,192.168.20.14,,,
+srv-app,192.168.31.0/24,192.168.20.14,,,
+```
+
+`Servername`, `Subnetz` (CIDR) and `ZielBeinIP` are required. The three name columns are optional — left blank, names are auto-generated. Comma or semicolon delimiters are both accepted. On import you choose whether to write to the first DC or all DCs; an (optional) preview lists everything before writing.
+
+> Column headers are German (matching the UI): `Servername`, `Subnetz`, `ZielBeinIP`, `SubnetzName`, `ScopeName`, `PolicyName`. Header matching is case-insensitive and also accepts a few aliases (e.g. `Server`, `Subnet`, `CIDR`).
 
 ## Key concepts (and gotchas)
 
